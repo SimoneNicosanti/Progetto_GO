@@ -1,17 +1,14 @@
 package peer
 
 import (
-	"fmt"
+	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"time"
 )
-
-type ResourceRange struct {
-	FirstKey int //esclusa
-	LastKey  int //inclusa
-}
 
 type SuccAndPred struct {
 	SuccPeerPtr *ChordPeer
@@ -19,11 +16,13 @@ type SuccAndPred struct {
 }
 
 var registryPort string = "1234"
-var registryIP string = ""
+var registryIP string = "127.0.0.1"
 
 func InitializeChord() (*ChordPeer, error) {
 
-	peerId := int(time.Now().Unix() % int64(N))
+	//peerId := int(time.Now().Unix() % int64(N))
+	rand.Seed(time.Now().UnixNano())
+	peerId := rand.Intn(N)
 
 	var peer *ChordPeer = new(ChordPeer)
 	peer.PeerId = peerId
@@ -38,6 +37,7 @@ func InitializeChord() (*ChordPeer, error) {
 		return nil, err
 	}
 
+	// Messo prima perché ho il Ping fatto dal Registry
 	go serveChord(listener)
 
 	err = enterInRing(peer, succAndPredPtr.SuccPeerPtr, succAndPredPtr.PredPeerPtr)
@@ -45,9 +45,64 @@ func InitializeChord() (*ChordPeer, error) {
 		return nil, err
 	}
 
-	println("Inizializzazione avvenuta con succsso")
+	go stabilizeRing(peer)
+	go manageCache()
+
+	log.Default().Println("Inizializzazione avvenuta con succsso")
 
 	return peer, nil
+}
+
+func stabilizeRing(peerPtr *ChordPeer) {
+	/*
+		Periodicamente chiedo al registry chi sono successore e predecessore.
+		Questo mi permette di stabilizzare l'anello anche in caso di accessi concorrenti.
+		Infatti ogni nodo periodicamente stabilizza la sua tabella e quindi ognuno ha almeno
+		il suo successore e predecessore corretti.
+		Nel caso di fingerTable standard, la ricerca del nodo successore potrebbe essere fatta
+		chiedendo solo al successore in modo ricorsivo, così da avere garanzia di correttezza
+	*/
+	for {
+		timer := time.NewTimer(30 * time.Second)
+		<-timer.C
+		fingerTable.mutex.Lock()
+		resourceMap.mutex.Lock()
+
+		succConn := fingerTable.table[1]
+		predConn := fingerTable.table[0]
+
+		if succConn == nil || predConn == nil {
+			resourceMap.mutex.Unlock()
+			fingerTable.mutex.Unlock()
+			continue
+		}
+
+		//arg := 0
+		//err_1 := succConn.ClientPtr.Call("ChordPeer.Ping", &arg, nil)
+		//err_2 := predConn.ClientPtr.Call("ChordPeer.Ping", &arg, nil)
+
+		//if err_1 != nil || err_2 != nil {
+		//log.Default().Println("Anello Non Stabile")
+		succAndPredPtr := new(SuccAndPred)
+		err := registryClientPtr.Call("Registry.FindSuccessorAndPredecessor", &(peerPtr.PeerId), succAndPredPtr)
+		if err != nil {
+			log.Default().Println("Impossibile Stabilizzare l'anello")
+			resourceMap.mutex.Unlock()
+			fingerTable.mutex.Unlock()
+			os.Exit(-1)
+		}
+		err = initializeFingerTable(succAndPredPtr.SuccPeerPtr, succAndPredPtr.PredPeerPtr)
+		if err != nil {
+			log.Default().Println("Impossibile Inizializzare Finger Table")
+			resourceMap.mutex.Unlock()
+			fingerTable.mutex.Unlock()
+			continue
+		}
+		log.Default().Println("Anello Stabilizzato")
+		//}
+		resourceMap.mutex.Unlock()
+		fingerTable.mutex.Unlock()
+	}
 }
 
 func serveChord(listenerPtr *net.Listener) {
@@ -59,27 +114,28 @@ func serveChord(listenerPtr *net.Listener) {
 func registerService(peerPtr *ChordPeer) (*net.Listener, error) {
 	err := rpc.Register(peerPtr)
 	if err != nil {
-		fmt.Println("Impossibile registrare il servizio")
-		fmt.Printf("Errore: '%s'", err.Error())
+		log.Default().Println("Impossibile registrare il servizio")
+		log.Default().Printf("Errore: '%s'", err.Error())
 		return nil, err
 	}
 
 	rpc.HandleHTTP()
-	listener, err := net.Listen("tcp", ":0")
+	chordListener, err := net.Listen("tcp", ":0")
 	if err != nil {
-		fmt.Println("Impossibile eseguire listen")
-		fmt.Printf("Errore: '%s'", err.Error())
+		log.Default().Println("Impossibile eseguire listen")
+		log.Default().Printf("Errore: '%s'", err.Error())
 		return nil, err
 	}
 
-	return &listener, nil
+	return &chordListener, nil
 }
 
 func registerPeer(peerPtr *ChordPeer) (*SuccAndPred, error) {
+
 	client, err := rpc.DialHTTP("tcp", registryIP+":"+registryPort)
 	if err != nil {
-		fmt.Println("Impossibile collegarsi al registry")
-		fmt.Printf("Errore: '%s'\n", err.Error())
+		log.Default().Println("Impossibile collegarsi al registry")
+		log.Default().Printf("Errore: '%s'\n", err.Error())
 		return nil, err
 	}
 	registryClientPtr = client
@@ -87,8 +143,8 @@ func registerPeer(peerPtr *ChordPeer) (*SuccAndPred, error) {
 	succAndPredPtr := new(SuccAndPred)
 	err = client.Call("Registry.PeerJoin", peerPtr, succAndPredPtr)
 	if err != nil {
-		fmt.Println("Impossibile registrare il peer")
-		fmt.Printf("Errore: '%s'\n", err.Error())
+		log.Default().Println("Impossibile registrare il peer")
+		log.Default().Printf("Errore: '%s'\n", err.Error())
 		return nil, err
 	}
 
@@ -96,10 +152,14 @@ func registerPeer(peerPtr *ChordPeer) (*SuccAndPred, error) {
 }
 
 func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer) error {
+	fingerTable.mutex.Lock()
+	resourceMap.mutex.Lock()
+	defer fingerTable.mutex.Unlock()
+	defer resourceMap.mutex.Unlock()
 
 	err := initializeFingerTable(succPeerPtr, predPeerPtr)
 	if err != nil {
-		fmt.Println("Impossibile inizializzare la finger table")
+		log.Default().Println("Impossibile inizializzare la finger table")
 		return err
 	}
 
@@ -107,15 +167,11 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 		// Contatto successore e predecessore per modificare i puntatori
 		// Il successore mi risponde anche con le risorse da prendere in carico
 		// Il predecessore mi risponde con null
-		fingerTable.mutex.Lock()
-		resourceMap.mutex.Lock()
-		defer resourceMap.mutex.Unlock()
-		defer fingerTable.mutex.Unlock()
 
 		predConn := fingerTable.table[0].ClientPtr
 		err = predConn.Call("ChordPeer.ChangeSuccessor", peer, nil)
 		if err != nil {
-			fmt.Println("Impossibile cambiare il successore del predecessore")
+			log.Default().Println("Impossibile cambiare il successore del predecessore")
 			return err
 		}
 
@@ -123,11 +179,12 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 		succConn := fingerTable.table[1].ClientPtr
 		err = succConn.Call("ChordPeer.ChangePredecessor", peer, &tempMap)
 		if err != nil {
-			fmt.Println("Impossibile cambiare il predecessore del successore")
+			log.Default().Println("Impossibile cambiare il predecessore del successore")
 			return err
 		}
 		for key, value := range tempMap {
 			resourceMap.resMap[key] = value
+			log.Default().Printf("Ricevuto. Key: %d, Value: %s\n", key, value.Value)
 		}
 
 	}
@@ -136,10 +193,11 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 }
 
 func initializeFingerTable(succPeerPtr *ChordPeer, predPeerPtr *ChordPeer) error {
-	fingerTable.mutex.Lock()
-	defer fingerTable.mutex.Unlock()
+	// Lock da prendere prima della chiamata
 
 	if succPeerPtr == nil && predPeerPtr == nil {
+		fingerTable.table[0] = nil
+		fingerTable.table[1] = nil
 		return nil
 	}
 
@@ -155,14 +213,14 @@ func initializeFingerTable(succPeerPtr *ChordPeer, predPeerPtr *ChordPeer) error
 	// In Chord di base dovrei ricalcolare tutte le entry contattando altri peer
 	succConnPtr, err := connectToPeer(succPeerPtr)
 	if err != nil {
-		fmt.Println("Impossibile collegarsi al successore")
+		log.Default().Println("Impossibile collegarsi al successore")
 		return err
 	}
 	fingerTable.table[1] = &PeerConnection{*succPeerPtr, succConnPtr}
 
 	predConnPtr, err := connectToPeer(predPeerPtr)
 	if err != nil {
-		fmt.Println("Impossibile collegarsi al predecessore")
+		log.Default().Println("Impossibile collegarsi al predecessore")
 		return err
 	}
 	fingerTable.table[0] = &PeerConnection{*predPeerPtr, predConnPtr}
@@ -171,14 +229,11 @@ func initializeFingerTable(succPeerPtr *ChordPeer, predPeerPtr *ChordPeer) error
 }
 
 func connectToPeer(peerPtr *ChordPeer) (*rpc.Client, error) {
-
-	println("Ciao 1")
 	clientPtr, err := rpc.DialHTTP("tcp", peerPtr.PeerAddr)
 	if err != nil {
-		fmt.Println("Impossibile collegarsi al peer")
+		log.Default().Println("Impossibile collegarsi al peer")
 		return nil, err
 	}
-	println("Ciao 1")
 
 	return clientPtr, nil
 }

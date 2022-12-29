@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"sync"
+	"time"
 )
 
 type PeerMap struct {
@@ -51,8 +52,37 @@ func main() {
 		return
 	}
 
+	go verifyActivePeer()
+
 	for {
 		http.Serve(listener, nil)
+	}
+}
+
+func verifyActivePeer() {
+	for {
+		timer := time.NewTimer(5 * time.Second)
+		<-timer.C
+		myMap.mutex.Lock()
+
+		for peerId, addrPtr := range myMap.peerMap {
+			peerConn, err := rpc.DialHTTP("tcp", *addrPtr)
+			if err != nil {
+				delete(myMap.peerMap, peerId)
+				fmt.Println(err.Error())
+				continue
+			}
+
+			arg := 0
+			err = peerConn.Call("ChordPeer.Ping", &arg, nil)
+			if err != nil {
+				delete(myMap.peerMap, peerId)
+				fmt.Println(err.Error())
+			}
+			fmt.Printf("%d ", peerId)
+		}
+		fmt.Println()
+		myMap.mutex.Unlock()
 	}
 }
 
@@ -74,16 +104,25 @@ func (t *Registry) PeerJoin(chordPeerPtr *ChordPeer, replyPtr *SuccAndPred) erro
 
 	// Trovo il successore e il predecessore del nodo e rispondo con quelli
 	// Se non faccio così posso rispondere con un nodo casuale della rete a cui poi viene chiesto di trovare successore e predecessore
-	findSuccessorAndPredecessor(chordPeerPtr.PeerId, replyPtr)
+	t.FindSuccessorAndPredecessor(&chordPeerPtr.PeerId, replyPtr)
 
 	return nil
 }
 
-func findSuccessorAndPredecessor(peerId int, succAndPredPtr *SuccAndPred) {
+func (t *Registry) PeerLeave(chordPeerPtr *ChordPeer, replyPtr *int) error {
+	myMap.mutex.Lock()
+	defer myMap.mutex.Unlock()
+
+	delete(myMap.peerMap, chordPeerPtr.PeerId)
+
+	return nil
+}
+
+func (t *Registry) FindSuccessorAndPredecessor(peerIdPtr *int, succAndPredPtr *SuccAndPred) error {
 
 	keySlice := make([]int, 0, 10)
 	for key := range myMap.peerMap {
-		if key != peerId {
+		if key != *peerIdPtr {
 			keySlice = append(keySlice, key)
 		}
 	}
@@ -92,7 +131,7 @@ func findSuccessorAndPredecessor(peerId int, succAndPredPtr *SuccAndPred) {
 		// è il primo nodo che entra nella rete
 		succAndPredPtr.PredPeerPtr = nil
 		succAndPredPtr.SuccPeerPtr = nil
-		return
+		return nil
 	}
 
 	succKey := N
@@ -103,10 +142,10 @@ func findSuccessorAndPredecessor(peerId int, succAndPredPtr *SuccAndPred) {
 	for index := range keySlice {
 		// Cerco successore
 		key := keySlice[index]
-		if key > peerId && key < succKey {
+		if key > *peerIdPtr && key < succKey {
 			succKey = key
 		}
-		if key < peerId && key > predKey {
+		if key < *peerIdPtr && key > predKey {
 			predKey = key
 		}
 		if key < minKey {
@@ -126,4 +165,6 @@ func findSuccessorAndPredecessor(peerId int, succAndPredPtr *SuccAndPred) {
 
 	succAndPredPtr.PredPeerPtr = &ChordPeer{predKey, *myMap.peerMap[predKey]}
 	succAndPredPtr.SuccPeerPtr = &ChordPeer{succKey, *myMap.peerMap[succKey]}
+
+	return nil
 }

@@ -2,66 +2,104 @@ package peer
 
 import (
 	"errors"
+	"log"
+	"time"
 )
 
 /*
 	TODO
-	- AGGIUNTA SEMAFORI SU STRUTTURE CONDIVISE
-	- Thread per verifica TTL
-	- Cache di risorse recenti : terna chiave, valore, TTL
-	- Finger Table
+	- Finger Table normale di Chord??
+	-
 */
 
 func (t *ChordPeer) Lookup(keyPtr *int, replyPtr *Resource) error {
-	/*
-		TODO
-		1. Consulta Cache
-		2. Verifica tu responsabile
-		3. Verifica successore responsabile
-		4. Ricerca ricorsiva
-		5. Aggiunta in cache
-	*/
+
 	resourceMap.mutex.Lock()
+	fingerTable.mutex.Lock()
+	peerCache.mutex.Lock()
+	defer peerCache.mutex.Unlock()
+	defer fingerTable.mutex.Unlock()
 	defer resourceMap.mutex.Unlock()
 
-	var resourceKey int = *keyPtr
-	if resourceMap.resMap[resourceKey] == nil {
-		return errors.New("la chiave non ha un valore associato")
+	lookupKey := *keyPtr
+	if isResponsible(t, lookupKey) {
+		// Il nodo attuale è il responsabile della risorsa
+		if resourceMap.resMap[lookupKey] == nil {
+			return errors.New("la chiave non ha un valore associato")
+		}
+		replyPtr.Value = resourceMap.resMap[lookupKey].Value
+		log.Default().Printf("Richiesta Lookup key: %d\n", *keyPtr)
+	} else {
+		// Ricerca in cache
+		cacheValue, inCache := peerCache.cacheMap[*keyPtr]
+		if inCache {
+			*replyPtr = *cacheValue.resource
+			return nil
+		}
+
+		// Ricerca in rete ed inserimento in cache
+		succConn := fingerTable.table[1].ClientPtr
+		err := succConn.Call("ChordPeer.Lookup", keyPtr, replyPtr)
+		if err != nil {
+			return err
+		}
+		peerCache.cacheMap[*keyPtr] = CacheTuple{replyPtr, time.Now()}
 	}
 
-	replyPtr.Value = resourceMap.resMap[resourceKey].Value
 	return nil
 }
 
 func (t *ChordPeer) Remove(keyPtr *int, replyPtr *Resource) error {
-	// TODO Aggiungere ricerca del nodo responsabile
+	// Dovrei pulire la cache in teoria, ma la pulizia viene fatta in automatico
 	resourceMap.mutex.Lock()
+	fingerTable.mutex.Lock()
+	defer fingerTable.mutex.Unlock()
 	defer resourceMap.mutex.Unlock()
 
-	var resourceKey int = *keyPtr
-	if resourceMap.resMap[resourceKey] == nil {
-		return errors.New("la chiave non ha un valore associato")
-	}
+	removeKey := *keyPtr
+	if isResponsible(t, removeKey) {
+		if resourceMap.resMap[removeKey] == nil {
+			return errors.New("la chiave non ha un valore associato")
+		}
+		replyPtr.Value = resourceMap.resMap[removeKey].Value
+		resourceMap.resMap[removeKey] = nil
+	} else {
+		succConn := fingerTable.table[1].ClientPtr
+		err := succConn.Call("ChordPeer.Remove", keyPtr, replyPtr)
 
-	replyPtr.Value = resourceMap.resMap[resourceKey].Value
-	resourceMap.resMap[resourceKey] = nil
+		if err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
 func (t *ChordPeer) Add(resourcePtr *Resource, replyPtr *int) error {
-	// TODO Aggiungere ricerca del nodo responsabile
 	resourceMap.mutex.Lock()
+	fingerTable.mutex.Lock()
+	peerCache.mutex.Lock()
+	defer peerCache.mutex.Unlock()
+	defer fingerTable.mutex.Unlock()
 	defer resourceMap.mutex.Unlock()
 
-	var resourceKey int = simpleHash(*resourcePtr)
+	var addKey int = simpleHash(*resourcePtr)
 
-	if resourceMap.resMap[resourceKey] != nil {
-		return errors.New("la chiave ha già un valore associato")
+	if isResponsible(t, addKey) {
+		if resourceMap.resMap[addKey] != nil {
+			return errors.New("la chiave ha già un valore associato")
+		}
+		resourceMap.resMap[addKey] = resourcePtr
+		*replyPtr = addKey
+		log.Default().Printf("Richiesta Aggiunta key: %d\n", addKey)
+	} else {
+		succConn := fingerTable.table[1].ClientPtr
+		err := succConn.Call("ChordPeer.Add", resourcePtr, replyPtr)
+		if err != nil {
+			return err
+		}
+		peerCache.cacheMap[addKey] = CacheTuple{resourcePtr, time.Now()}
 	}
-	resourceMap.resMap[resourceKey] = resourcePtr
-
-	*replyPtr = resourceKey
 
 	return nil
 }
@@ -75,25 +113,57 @@ func simpleHash(resource Resource) int {
 	return hashValue
 }
 
+func isResponsible(peer *ChordPeer, key int) bool {
+	if fingerTable.table[0] == nil {
+		// Unico nodo della rete
+		return true
+	}
+	predId := fingerTable.table[0].Peer.PeerId
+	peerId := peer.PeerId
+
+	var isResp bool
+	if predId > peerId {
+		isResp = (key > predId && key < N) || (key >= 0 && key <= peerId)
+	} else {
+		isResp = (key > predId && key <= peerId)
+	}
+
+	return isResp
+}
+
+func manageCache() {
+	for {
+		timer := time.NewTimer(30 * time.Second)
+		<-timer.C
+		peerCache.mutex.Lock()
+
+		for key, tuple := range peerCache.cacheMap {
+			now := time.Now()
+			if now.Sub(tuple.entryTime) > (10 * time.Second) {
+				delete(peerCache.cacheMap, key)
+			}
+		}
+
+		peerCache.mutex.Unlock()
+	}
+}
+
 func (t *ChordPeer) ChangeSuccessor(newSuccPtr *ChordPeer, replyPtr *int) error {
 	fingerTable.mutex.Lock()
 	defer fingerTable.mutex.Unlock()
-
-	table := fingerTable.table
 
 	newSuccConn, err := connectToPeer(newSuccPtr)
 	if err != nil {
 		return err
 	}
 
-	if table[1] != nil {
-		/*if newSuccPtr.PeerId > table[1].Peer.PeerId {
-			return errors.New("il nuovo successore non può essere maggiore dell'attuale")
-		}*/
-		table[1].ClientPtr.Close()
+	if fingerTable.table[1] != nil {
+		fingerTable.table[1].ClientPtr.Close()
 	}
 
-	table[1] = &PeerConnection{*newSuccPtr, newSuccConn}
+	fingerTable.table[1] = &PeerConnection{*newSuccPtr, newSuccConn}
+
+	log.Default().Printf("New Successor: %d\n", newSuccPtr.PeerId)
 
 	return nil
 
@@ -105,29 +175,52 @@ func (t *ChordPeer) ChangePredecessor(newPredPtr *ChordPeer, replyPtr *map[int](
 	defer resourceMap.mutex.Unlock()
 	defer fingerTable.mutex.Unlock()
 
-	table := fingerTable.table
-
 	newPredConn, err := connectToPeer(newPredPtr)
 	if err != nil {
 		return err
 	}
 
-	if table[0] != nil {
-		/*if newPredPtr.PeerId < table[0].Peer.PeerId {
-			return errors.New("il nuovo predecessore non può essere minore dell'attuale")
-		}*/
-		table[0].ClientPtr.Close()
+	var currPredId int
+	if fingerTable.table[0] == nil {
+		currPredId = t.PeerId
+	} else {
+		currPredId = fingerTable.table[0].Peer.PeerId
+		log.Default().Printf("Current Predecessor : %d", currPredId)
 	}
 
 	for key, value := range resourceMap.resMap {
-		if key > table[0].Peer.PeerId && key <= newPredPtr.PeerId {
-			(*replyPtr)[key] = value
-			delete(resourceMap.resMap, key)
+		if newPredPtr.PeerId > t.PeerId {
+			if key > currPredId && key <= newPredPtr.PeerId {
+				(*replyPtr)[key] = value
+				delete(resourceMap.resMap, key)
+				log.Default().Printf("Passato 1: %d, %s", key, *value)
+			}
+		} else if newPredPtr.PeerId < t.PeerId && newPredPtr.PeerId > currPredId {
+			if key <= newPredPtr.PeerId && key > currPredId {
+				(*replyPtr)[key] = value
+				delete(resourceMap.resMap, key)
+				log.Default().Printf("Passato 2: %d, %s", key, *value)
+			}
+		} else {
+			if (key > currPredId && key < N) || (key >= 0 && key <= newPredPtr.PeerId) {
+				(*replyPtr)[key] = value
+				delete(resourceMap.resMap, key)
+				log.Default().Printf("Passato 3: %d, %s", key, *value)
+			}
 		}
 	}
 
-	table[0] = &PeerConnection{*newPredPtr, newPredConn}
+	if fingerTable.table[0] != nil {
+		fingerTable.table[0].ClientPtr.Close()
+	}
+	fingerTable.table[0] = &PeerConnection{*newPredPtr, newPredConn}
+
+	log.Default().Printf("New Predecessor: %d\n", newPredPtr.PeerId)
 
 	return nil
 
+}
+
+func (t *ChordPeer) Ping(argsPtr *int, replyPtr *int) error {
+	return nil
 }

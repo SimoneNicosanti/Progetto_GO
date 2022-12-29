@@ -14,6 +14,7 @@ func main() {
 		fmt.Printf("Errore '%s'\n", err.Error())
 		return
 	}
+	fmt.Printf("PeerId: %d\n", peer.PeerId)
 	controller.Controller(peer)
 	fmt.Println("------------------- Bye -------------------")
 }

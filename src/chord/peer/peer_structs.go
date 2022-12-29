@@ -1,8 +1,10 @@
 package peer
 
 import (
+	"math"
 	"net/rpc"
 	"sync"
+	"time"
 )
 
 type ChordPeer struct {
@@ -10,7 +12,9 @@ type ChordPeer struct {
 	PeerAddr string
 }
 
-var N int = 64
+const bitNumber int = 6
+
+var N int = int(math.Pow(2, 6))
 
 type Resource struct {
 	Value string
@@ -29,18 +33,28 @@ type PeerConnection struct {
 }
 
 /*
-Ho 64 possibili chiavi --> lo spazio di indirizzamento è di log(N) = 6 bit
 fingerTable[0] == predecessore
 fingerTable[1] == successore
 */
 
 type FingerTable struct {
 	mutex sync.Mutex
-	table [2](*PeerConnection)
+	table [bitNumber + 1](*PeerConnection)
 }
 
-var fingerTable FingerTable = FingerTable{sync.Mutex{}, [2](*PeerConnection){nil, nil}}
+// TODO verificare che inizializzazione sia fatta in modo corretto
+var fingerTable FingerTable = FingerTable{sync.Mutex{}, [bitNumber + 1](*PeerConnection){}}
 
 var registryClientPtr *rpc.Client
 
-//TODO Meccanismo di Caching per velocizzare algoritmo di Lookup
+type CacheTuple struct {
+	resource  *Resource
+	entryTime time.Time
+}
+
+type Cache struct {
+	mutex    sync.Mutex
+	cacheMap map[int](CacheTuple)
+}
+
+var peerCache Cache = Cache{sync.Mutex{}, make((map[int](CacheTuple)))}
