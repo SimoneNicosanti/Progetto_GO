@@ -23,7 +23,13 @@ func Controller(peerPtr *peer.ChordPeer) {
 			//Remove
 			removeResource()
 		case 4:
-			exit = true
+			//Exit
+			err := peer.LeaveRing(nodePtr)
+			if err != nil {
+				view.PrintError("Impossibile Uscire dall' anello; Attendere", err)
+			} else {
+				exit = true
+			}
 		default:
 			view.PrintInvalidOption()
 		}
@@ -36,7 +42,7 @@ func lookupResource() {
 		return
 	}
 	resourcePtr := new(peer.Resource)
-	err = nodePtr.Lookup(&key, resourcePtr)
+	err = nodePtr.LookupResource(&key, resourcePtr)
 	if err != nil {
 		view.PrintError("Impossibile trovare risorsa", err)
 		return
@@ -53,7 +59,7 @@ func addResource() {
 	resourcePtr := new(peer.Resource)
 	resourcePtr.Value = resourceValue
 	var newResourceKey int
-	err = nodePtr.Add(resourcePtr, &newResourceKey)
+	err = nodePtr.AddResource(resourcePtr, &newResourceKey)
 	if err != nil {
 		view.PrintError("Impossibile aggiungere risorsa", err)
 		return
@@ -68,7 +74,7 @@ func removeResource() {
 	}
 
 	resourcePtr := new(peer.Resource)
-	err = nodePtr.Remove(&key, resourcePtr)
+	err = nodePtr.RemoveResource(&key, resourcePtr)
 
 	if err != nil {
 		view.PrintError("Impossibile rimuovere risorsa", err)

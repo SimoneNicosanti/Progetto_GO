@@ -63,7 +63,7 @@ func stabilizeRing(peerPtr *ChordPeer) {
 		chiedendo solo al successore in modo ricorsivo, così da avere garanzia di correttezza
 	*/
 	for {
-		timer := time.NewTimer(30 * time.Second)
+		timer := time.NewTimer(STABILIZE_TIMER * time.Second)
 		<-timer.C
 		fingerTable.mutex.Lock()
 		resourceMap.mutex.Lock()
@@ -84,14 +84,14 @@ func stabilizeRing(peerPtr *ChordPeer) {
 		//if err_1 != nil || err_2 != nil {
 		//log.Default().Println("Anello Non Stabile")
 		succAndPredPtr := new(SuccAndPred)
-		err := registryClientPtr.Call("Registry.FindSuccessorAndPredecessor", &(peerPtr.PeerId), succAndPredPtr)
+		err := registryClientPtr.Call("Registry.GetSuccessorAndPredecessor", peerPtr, succAndPredPtr)
 		if err != nil {
 			log.Default().Println("Impossibile Stabilizzare l'anello")
 			resourceMap.mutex.Unlock()
 			fingerTable.mutex.Unlock()
 			os.Exit(-1)
 		}
-		err = initializeFingerTable(succAndPredPtr.SuccPeerPtr, succAndPredPtr.PredPeerPtr)
+		err = initializeFingerTable(succAndPredPtr.SuccPeerPtr, succAndPredPtr.PredPeerPtr, peerPtr)
 		if err != nil {
 			log.Default().Println("Impossibile Inizializzare Finger Table")
 			resourceMap.mutex.Unlock()
@@ -157,7 +157,7 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 	defer fingerTable.mutex.Unlock()
 	defer resourceMap.mutex.Unlock()
 
-	err := initializeFingerTable(succPeerPtr, predPeerPtr)
+	err := initializeFingerTable(succPeerPtr, predPeerPtr, peer)
 	if err != nil {
 		log.Default().Println("Impossibile inizializzare la finger table")
 		return err
@@ -177,7 +177,7 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 
 		var tempMap map[int](*Resource) = make(map[int]*Resource)
 		succConn := fingerTable.table[1].ClientPtr
-		err = succConn.Call("ChordPeer.ChangePredecessor", peer, &tempMap)
+		err = succConn.Call("ChordPeer.ChangePredecessorByJoin", peer, &tempMap)
 		if err != nil {
 			log.Default().Println("Impossibile cambiare il predecessore del successore")
 			return err
@@ -192,7 +192,7 @@ func enterInRing(peer *ChordPeer, succPeerPtr *ChordPeer, predPeerPtr *ChordPeer
 	return nil
 }
 
-func initializeFingerTable(succPeerPtr *ChordPeer, predPeerPtr *ChordPeer) error {
+func initializeFingerTable(succPeerPtr *ChordPeer, predPeerPtr *ChordPeer, peerPtr *ChordPeer) error {
 	// Lock da prendere prima della chiamata
 
 	if succPeerPtr == nil && predPeerPtr == nil {

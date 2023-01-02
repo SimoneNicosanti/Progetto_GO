@@ -31,7 +31,7 @@ type SuccAndPred struct {
 	PredPeerPtr *ChordPeer
 }
 
-//Aggiungere PING ai vari peer per verificare che siano ancora attivi in modo da pulire il registry periodicamente
+// TODO Valutare come parallelizzare meglio l'accesso al registry --> Il mutex blocca tutti, anche coloro che vogliono solo leggere e non scrivere !!
 
 func main() {
 
@@ -104,7 +104,7 @@ func (t *Registry) PeerJoin(chordPeerPtr *ChordPeer, replyPtr *SuccAndPred) erro
 
 	// Trovo il successore e il predecessore del nodo e rispondo con quelli
 	// Se non faccio così posso rispondere con un nodo casuale della rete a cui poi viene chiesto di trovare successore e predecessore
-	t.FindSuccessorAndPredecessor(&chordPeerPtr.PeerId, replyPtr)
+	findSuccessorAndPredecessor(chordPeerPtr, replyPtr)
 
 	return nil
 }
@@ -118,20 +118,28 @@ func (t *Registry) PeerLeave(chordPeerPtr *ChordPeer, replyPtr *int) error {
 	return nil
 }
 
-func (t *Registry) FindSuccessorAndPredecessor(peerIdPtr *int, succAndPredPtr *SuccAndPred) error {
+func (t *Registry) GetSuccessorAndPredecessor(peerPtr *ChordPeer, succAndPredPtr *SuccAndPred) error {
+	myMap.mutex.Lock()
+	defer myMap.mutex.Unlock()
 
+	findSuccessorAndPredecessor(peerPtr, succAndPredPtr)
+
+	return nil
+}
+
+func findSuccessorAndPredecessor(peerPtr *ChordPeer, succAndPredPtr *SuccAndPred) {
 	keySlice := make([]int, 0, 10)
 	for key := range myMap.peerMap {
-		if key != *peerIdPtr {
+		if key != peerPtr.PeerId {
 			keySlice = append(keySlice, key)
 		}
 	}
 
 	if len(keySlice) == 0 {
-		// è il primo nodo che entra nella rete
+		// è l'unico nodo all'interno della rete: il suo successore e predecessore coincidono con lui stesso
 		succAndPredPtr.PredPeerPtr = nil
 		succAndPredPtr.SuccPeerPtr = nil
-		return nil
+		return
 	}
 
 	succKey := N
@@ -142,10 +150,10 @@ func (t *Registry) FindSuccessorAndPredecessor(peerIdPtr *int, succAndPredPtr *S
 	for index := range keySlice {
 		// Cerco successore
 		key := keySlice[index]
-		if key > *peerIdPtr && key < succKey {
+		if key > peerPtr.PeerId && key < succKey {
 			succKey = key
 		}
-		if key < *peerIdPtr && key > predKey {
+		if key < peerPtr.PeerId && key > predKey {
 			predKey = key
 		}
 		if key < minKey {
@@ -165,6 +173,4 @@ func (t *Registry) FindSuccessorAndPredecessor(peerIdPtr *int, succAndPredPtr *S
 
 	succAndPredPtr.PredPeerPtr = &ChordPeer{predKey, *myMap.peerMap[predKey]}
 	succAndPredPtr.SuccPeerPtr = &ChordPeer{succKey, *myMap.peerMap[succKey]}
-
-	return nil
 }

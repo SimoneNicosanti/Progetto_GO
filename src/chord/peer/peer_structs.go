@@ -16,6 +16,12 @@ const bitNumber int = 6
 
 var N int = int(math.Pow(2, 6))
 
+const CACHE_RES_TTL time.Duration = 30
+
+const CACHE_TIMER time.Duration = 30
+
+const STABILIZE_TIMER time.Duration = 30
+
 type Resource struct {
 	Value string
 }
@@ -30,6 +36,12 @@ var resourceMap ResourceMap = ResourceMap{sync.Mutex{}, make((map[int](*Resource
 type PeerConnection struct {
 	Peer      ChordPeer
 	ClientPtr *rpc.Client
+}
+
+// Struttura che mi serve per dire chi è il nuovo predecessore del peer e quali chiavi il peer deve predere in carico a seguito del cambio predecessore
+type PredecessorInfo struct {
+	Peer           ChordPeer
+	PredecessorMap map[int](*Resource)
 }
 
 /*
