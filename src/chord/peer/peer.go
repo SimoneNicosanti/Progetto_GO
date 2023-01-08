@@ -9,17 +9,18 @@ import (
 /*
 	TODO
 	- Finger Table normale di Chord??
-	-
+	- Studiare bene i lock delle risorse: vedere se si può parallelizzare meglio senza usare le defer
+		se uso le defer, quando ho la ricerca ricorsiva, le risorse possono essere bloccate fino alla fine della ricorsione!!
 */
 
 func (t *ChordPeer) LookupResource(keyPtr *int, replyPtr *Resource) error {
 
-	resourceMap.mutex.Lock()
-	fingerTable.mutex.Lock()
+	resourceMap.mutex.RLock()
+	fingerTable.mutex.RLock()
 	peerCache.mutex.Lock()
 	defer peerCache.mutex.Unlock()
-	defer fingerTable.mutex.Unlock()
-	defer resourceMap.mutex.Unlock()
+	defer fingerTable.mutex.RUnlock()
+	defer resourceMap.mutex.RUnlock()
 
 	lookupKey := *keyPtr
 	if isResponsible(t, lookupKey) {
@@ -52,8 +53,8 @@ func (t *ChordPeer) LookupResource(keyPtr *int, replyPtr *Resource) error {
 func (t *ChordPeer) RemoveResource(keyPtr *int, replyPtr *Resource) error {
 	// Dovrei pulire la cache in teoria, ma la pulizia viene fatta in automatico
 	resourceMap.mutex.Lock()
-	fingerTable.mutex.Lock()
-	defer fingerTable.mutex.Unlock()
+	fingerTable.mutex.RLock()
+	defer fingerTable.mutex.RUnlock()
 	defer resourceMap.mutex.Unlock()
 
 	removeKey := *keyPtr
@@ -77,10 +78,10 @@ func (t *ChordPeer) RemoveResource(keyPtr *int, replyPtr *Resource) error {
 
 func (t *ChordPeer) AddResource(resourcePtr *Resource, replyPtr *int) error {
 	resourceMap.mutex.Lock()
-	fingerTable.mutex.Lock()
+	fingerTable.mutex.RLock()
 	peerCache.mutex.Lock()
 	defer peerCache.mutex.Unlock()
-	defer fingerTable.mutex.Unlock()
+	defer fingerTable.mutex.RUnlock()
 	defer resourceMap.mutex.Unlock()
 
 	var addKey int = simpleHash(*resourcePtr)
@@ -192,16 +193,23 @@ func (t *ChordPeer) ChangeSuccessor(newSuccPtr *ChordPeer, replyPtr *int) error 
 	fingerTable.mutex.Lock()
 	defer fingerTable.mutex.Unlock()
 
-	newSuccConn, err := connectToPeer(newSuccPtr)
-	if err != nil {
-		return err
+	var newTableValue *PeerConnection
+	if newSuccPtr.PeerId == t.PeerId {
+		// Nodo unico nella rete --> Successore diventa nil
+		newTableValue = nil
+	} else {
+		newSuccConn, err := connectToPeer(newSuccPtr)
+		if err != nil {
+			return err
+		}
+		newTableValue = &PeerConnection{*newSuccPtr, newSuccConn}
 	}
 
 	if fingerTable.table[1] != nil {
 		fingerTable.table[1].ClientPtr.Close()
 	}
 
-	fingerTable.table[1] = &PeerConnection{*newSuccPtr, newSuccConn}
+	fingerTable.table[1] = newTableValue
 
 	log.Default().Printf("New Successor: %d\n", newSuccPtr.PeerId)
 
@@ -233,19 +241,19 @@ func (t *ChordPeer) ChangePredecessorByJoin(newPredPtr *ChordPeer, replyPtr *map
 			if key > currPredId && key <= newPredPtr.PeerId {
 				(*replyPtr)[key] = value
 				delete(resourceMap.resMap, key)
-				log.Default().Printf("Passato 1: %d, %s", key, *value)
+				//log.Default().Printf("Passato 1: %d, %s", key, *value)
 			}
 		} else if newPredPtr.PeerId < t.PeerId && newPredPtr.PeerId > currPredId {
 			if key <= newPredPtr.PeerId && key > currPredId {
 				(*replyPtr)[key] = value
 				delete(resourceMap.resMap, key)
-				log.Default().Printf("Passato 2: %d, %s", key, *value)
+				//log.Default().Printf("Passato 2: %d, %s", key, *value)
 			}
 		} else {
 			if (key > currPredId && key < N) || (key >= 0 && key <= newPredPtr.PeerId) {
 				(*replyPtr)[key] = value
 				delete(resourceMap.resMap, key)
-				log.Default().Printf("Passato 3: %d, %s", key, *value)
+				//log.Default().Printf("Passato 3: %d, %s", key, *value)
 			}
 		}
 	}
@@ -267,20 +275,29 @@ func (t *ChordPeer) ChangePredecessorByLeave(predInfoPtr *PredecessorInfo, reply
 	defer resourceMap.mutex.Unlock()
 	defer fingerTable.mutex.Unlock()
 
-	newPredConn, err := connectToPeer(&predInfoPtr.Peer)
-	if err != nil {
-		return err
+	var newTableValue *PeerConnection
+	if predInfoPtr.Peer.PeerId == t.PeerId {
+		// Il nodo diventa unico all'interno della rete --> Predecessore diventa nil
+		newTableValue = nil
+	} else {
+		// Ho un altro nodo all'interno della rete che diventa il predecessore
+		newPredConn, err := connectToPeer(&predInfoPtr.Peer)
+		if err != nil {
+			return err
+		}
+		newTableValue = &PeerConnection{predInfoPtr.Peer, newPredConn}
 	}
-
-	if fingerTable.table[0] != nil {
-		fingerTable.table[0].ClientPtr.Close()
-	}
-	fingerTable.table[0] = &PeerConnection{predInfoPtr.Peer, newPredConn}
 
 	for key, value := range predInfoPtr.PredecessorMap {
 		resourceMap.resMap[key] = value
 		log.Default().Printf("Passata Coppia: (%d, %s)\n", key, value.Value)
 	}
+
+	if fingerTable.table[0] != nil {
+		fingerTable.table[0].ClientPtr.Close()
+	}
+
+	fingerTable.table[0] = newTableValue
 
 	log.Default().Printf("New Predecessor: %d\n", predInfoPtr.Peer.PeerId)
 
@@ -292,8 +309,8 @@ func (t *ChordPeer) Ping(argsPtr *int, replyPtr *int) error {
 }
 
 func (t *ChordPeer) FindSuccessor(peerPtr *ChordPeer, successorPtr *ChordPeer) error {
-	fingerTable.mutex.Lock()
-	defer fingerTable.mutex.Unlock()
+	fingerTable.mutex.RLock()
+	defer fingerTable.mutex.RUnlock()
 
 	err := findResourceSuccessor(peerPtr.PeerId, t, successorPtr)
 	if err != nil {

@@ -11,13 +11,13 @@ import (
 )
 
 type PeerMap struct {
-	mutex   sync.Mutex
+	mutex   sync.RWMutex
 	peerMap map[int](*string)
 }
 
 var N int = 64
 
-var myMap PeerMap = PeerMap{sync.Mutex{}, make(map[int](*string))}
+var myMap PeerMap = PeerMap{sync.RWMutex{}, make(map[int](*string))}
 
 type Registry int
 
@@ -31,7 +31,7 @@ type SuccAndPred struct {
 	PredPeerPtr *ChordPeer
 }
 
-// TODO Valutare come parallelizzare meglio l'accesso al registry --> Il mutex blocca tutti, anche coloro che vogliono solo leggere e non scrivere !!
+const PING_TIMER int = 10
 
 func main() {
 
@@ -61,7 +61,7 @@ func main() {
 
 func verifyActivePeer() {
 	for {
-		timer := time.NewTimer(5 * time.Second)
+		timer := time.NewTimer(time.Duration(PING_TIMER) * time.Second)
 		<-timer.C
 		myMap.mutex.Lock()
 
@@ -78,6 +78,7 @@ func verifyActivePeer() {
 			if err != nil {
 				delete(myMap.peerMap, peerId)
 				fmt.Println(err.Error())
+				continue
 			}
 			fmt.Printf("%d ", peerId)
 		}
@@ -119,8 +120,8 @@ func (t *Registry) PeerLeave(chordPeerPtr *ChordPeer, replyPtr *int) error {
 }
 
 func (t *Registry) GetSuccessorAndPredecessor(peerPtr *ChordPeer, succAndPredPtr *SuccAndPred) error {
-	myMap.mutex.Lock()
-	defer myMap.mutex.Unlock()
+	myMap.mutex.RLock()
+	defer myMap.mutex.RUnlock()
 
 	findSuccessorAndPredecessor(peerPtr, succAndPredPtr)
 
@@ -136,7 +137,7 @@ func findSuccessorAndPredecessor(peerPtr *ChordPeer, succAndPredPtr *SuccAndPred
 	}
 
 	if len(keySlice) == 0 {
-		// è l'unico nodo all'interno della rete: il suo successore e predecessore coincidono con lui stesso
+		// è l'unico nodo all'interno della rete: il suo successore e predecessore sono nil
 		succAndPredPtr.PredPeerPtr = nil
 		succAndPredPtr.SuccPeerPtr = nil
 		return

@@ -26,7 +26,7 @@ func Controller(peerPtr *peer.ChordPeer) {
 			//Exit
 			err := peer.LeaveRing(nodePtr)
 			if err != nil {
-				view.PrintError("Impossibile Uscire dall' anello; Attendere", err)
+				view.PrintError("Impossibile Uscire dall' anello; Attendere per non perdere le risorse salvate", err)
 			} else {
 				exit = true
 			}

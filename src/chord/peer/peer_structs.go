@@ -27,35 +27,39 @@ type Resource struct {
 }
 
 type ResourceMap struct {
-	mutex  sync.Mutex
+	mutex  sync.RWMutex
 	resMap map[int](*Resource)
 }
 
-var resourceMap ResourceMap = ResourceMap{sync.Mutex{}, make((map[int](*Resource)))}
+var resourceMap ResourceMap = ResourceMap{sync.RWMutex{}, make((map[int](*Resource)))}
 
 type PeerConnection struct {
 	Peer      ChordPeer
 	ClientPtr *rpc.Client
 }
 
-// Struttura che mi serve per dire chi è il nuovo predecessore del peer e quali chiavi il peer deve predere in carico a seguito del cambio predecessore
+/*
+Struttura che mi serve per dire chi è il nuovo predecessore del peer
+e quali chiavi il peer deve predere in carico a seguito del cambio predecessore
+*/
 type PredecessorInfo struct {
 	Peer           ChordPeer
 	PredecessorMap map[int](*Resource)
 }
 
 /*
-fingerTable[0] == predecessore
-fingerTable[1] == successore
-*/
+Struttura che rappresenta la fingerTable del nodo.
+  - fingerTable[0] == predecessore
+  - fingerTable[1] == successore
 
+Se il nodo è da solo nell'anello, successore e predecessore puntano a nil
+*/
 type FingerTable struct {
-	mutex sync.Mutex
+	mutex sync.RWMutex
 	table [bitNumber + 1](*PeerConnection)
 }
 
-// TODO verificare che inizializzazione sia fatta in modo corretto
-var fingerTable FingerTable = FingerTable{sync.Mutex{}, [bitNumber + 1](*PeerConnection){}}
+var fingerTable FingerTable = FingerTable{sync.RWMutex{}, [bitNumber + 1](*PeerConnection){}}
 
 var registryClientPtr *rpc.Client
 
@@ -65,8 +69,8 @@ type CacheTuple struct {
 }
 
 type Cache struct {
-	mutex    sync.Mutex
+	mutex    sync.RWMutex
 	cacheMap map[int](CacheTuple)
 }
 
-var peerCache Cache = Cache{sync.Mutex{}, make((map[int](CacheTuple)))}
+var peerCache Cache = Cache{sync.RWMutex{}, make((map[int](CacheTuple)))}

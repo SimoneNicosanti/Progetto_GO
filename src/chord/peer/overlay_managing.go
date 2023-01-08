@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
 	"time"
 )
 
@@ -68,10 +67,10 @@ func stabilizeRing(peerPtr *ChordPeer) {
 		fingerTable.mutex.Lock()
 		resourceMap.mutex.Lock()
 
-		succConn := fingerTable.table[1]
-		predConn := fingerTable.table[0]
+		//succConn := fingerTable.table[1]
+		//predConn := fingerTable.table[0]
 
-		if succConn == nil || predConn == nil {
+		/*if succConn == nil || predConn == nil {
 			resourceMap.mutex.Unlock()
 			fingerTable.mutex.Unlock()
 			continue
@@ -82,14 +81,15 @@ func stabilizeRing(peerPtr *ChordPeer) {
 		//err_2 := predConn.ClientPtr.Call("ChordPeer.Ping", &arg, nil)
 
 		//if err_1 != nil || err_2 != nil {
-		//log.Default().Println("Anello Non Stabile")
+		//log.Default().Println("Anello Non Stabile")*/
 		succAndPredPtr := new(SuccAndPred)
 		err := registryClientPtr.Call("Registry.GetSuccessorAndPredecessor", peerPtr, succAndPredPtr)
 		if err != nil {
 			log.Default().Println("Impossibile Stabilizzare l'anello")
 			resourceMap.mutex.Unlock()
 			fingerTable.mutex.Unlock()
-			os.Exit(-1)
+			//os.Exit(-1)
+			continue
 		}
 		err = initializeFingerTable(succAndPredPtr.SuccPeerPtr, succAndPredPtr.PredPeerPtr, peerPtr)
 		if err != nil {
