@@ -8,7 +8,6 @@ import (
 
 /*
 	TODO
-	- Finger Table normale di Chord??
 	- Studiare bene i lock delle risorse: vedere se si può parallelizzare meglio senza usare le defer
 		se uso le defer, quando ho la ricerca ricorsiva, le risorse possono essere bloccate fino alla fine della ricorsione!!
 */
